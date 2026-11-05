@@ -135,10 +135,7 @@ pub fn booto(disk: &Disk, iso: &Path, data_mib: Option<u64>, encrypt: bool) -> R
     if encrypt {
         tools.push("cryptsetup");
     }
-    for tool in tools {
-        run("sh", &["-c", &format!("command -v {tool}")])
-            .with_context(|| format!("required tool {tool} is not installed"))?;
-    }
+    require_tools(&tools)?;
     let need_mib = LIVE_MIB + data_mib.unwrap_or(MIN_DATA_MIB) + 2;
     if disk.size >> 20 < need_mib {
         bail!(
@@ -255,6 +252,116 @@ pub fn booto(disk: &Disk, iso: &Path, data_mib: Option<u64>, encrypt: bool) -> R
     };
     println!(
         "Done: {} is a Booto USB. Reports partition {data}: {lock}.",
+        disk.path
+    );
+    Ok(())
+}
+
+fn require_tools(tools: &[&str]) -> Result<()> {
+    for tool in tools {
+        run("sh", &["-c", &format!("command -v {tool}")])
+            .with_context(|| format!("required tool {tool} is not installed"))?;
+    }
+    Ok(())
+}
+
+/// FAT32 cannot hold a file of 4 GiB or more.
+const FAT32_MAX_FILE: u64 = (4 << 30) - 1;
+
+/// Windows installer USB for UEFI PCs: one FAT32 partition holding the ISO's files.
+/// Windows ISOs are not hybrid images, so they cannot be written raw. An install.wim too big
+/// for FAT32 is split into install.swm parts, which Windows Setup reads natively.
+pub fn windows(disk: &Disk, iso: &Path) -> Result<()> {
+    require_tools(&[
+        "wipefs",
+        "parted",
+        "partprobe",
+        "udevadm",
+        "mkfs.vfat",
+        "mount",
+        "umount",
+        "cp",
+        "blockdev",
+    ])?;
+    let iso_len = std::fs::metadata(iso)?.len();
+    if iso_len + (64 << 20) > disk.size {
+        bail!(
+            "{} has {} MiB; this ISO needs about {} MiB",
+            disk.path,
+            disk.size >> 20,
+            (iso_len >> 20) + 64
+        );
+    }
+    let iso = iso.to_str().context("ISO path is not UTF-8")?;
+    unmount_all(disk)?;
+
+    println!("[1/3] Partitioning {}", disk.path);
+    run("wipefs", &["-af", &disk.path])?;
+    run(
+        "parted",
+        &[
+            "-s", &disk.path, "mklabel", "msdos", "mkpart", "primary", "fat32", "1MiB", "100%",
+            "set", "1", "boot", "on",
+        ],
+    )?;
+    run("partprobe", &[&disk.path])?;
+    run("udevadm", &["settle"])?;
+    let part = part_path(&disk.path, 1);
+    if !Path::new(&part).exists() {
+        bail!("partition {part} did not appear after partitioning");
+    }
+    run("mkfs.vfat", &["-F", "32", "-n", "WINSETUP", &part])?;
+
+    println!("[2/3] Copying installer files");
+    let iso_mnt = TempMount::new(iso, &["-o", "loop,ro"])?;
+    let usb = TempMount::new(&part, &[])?;
+    let wim = iso_mnt.0.join("sources/install.wim");
+    let split = wim.metadata().is_ok_and(|m| m.len() > FAT32_MAX_FILE);
+    if split {
+        require_tools(&["wimlib-imagex"])
+            .context("install.wim is over 4 GiB; install wimtools to split it")?;
+    }
+    for entry in std::fs::read_dir(&iso_mnt.0)? {
+        let entry = entry?.path();
+        if split && entry == wim.parent().unwrap_or(&wim) {
+            let sources = usb.0.join("sources");
+            std::fs::create_dir_all(&sources)?;
+            for child in std::fs::read_dir(&entry)? {
+                let child = child?.path();
+                if child != wim {
+                    exec(
+                        "cp",
+                        &["-r", &child.to_string_lossy(), &sources.to_string_lossy()],
+                    )?;
+                }
+            }
+        } else {
+            exec(
+                "cp",
+                &["-r", &entry.to_string_lossy(), &usb.0.to_string_lossy()],
+            )?;
+        }
+    }
+    if split {
+        println!("[3/3] Splitting install.wim into 3800 MiB parts");
+        let swm = usb.0.join("sources/install.swm");
+        exec(
+            "wimlib-imagex",
+            &[
+                "split",
+                &wim.to_string_lossy(),
+                &swm.to_string_lossy(),
+                "3800",
+            ],
+        )?;
+    } else {
+        println!("[3/3] install.wim fits FAT32; no split needed");
+    }
+    drop(usb);
+    drop(iso_mnt);
+    run("blockdev", &["--flushbufs", &disk.path])?;
+    println!(
+        "Done: {} is a Windows installer USB. Boot it in UEFI mode.",
         disk.path
     );
     Ok(())

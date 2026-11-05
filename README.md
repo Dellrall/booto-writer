@@ -4,6 +4,7 @@ Command-line USB writer for [Booto](https://github.com/Dellrall/Booto) and other
 
 - **`booto`**: downloads the latest Booto ISO, checks its SHA-256, and builds the two-partition Booto USB (live system + report partition, with or without a passphrase). Same layout as Booto's `scripts/setup_usb.sh`.
 - **`write`**: writes any hybrid ISO or raw image byte for byte (Debian, Ubuntu, Fedora, Arch and most other Linux ISOs), then reads the USB back to confirm it holds the image.
+- **`windows`**: makes a Windows 10/11 installer USB for UEFI PCs. Windows ISOs are not hybrid images, so their files are copied to a FAT32 partition instead, and an `install.wim` over 4 GiB is split into `install.swm` parts.
 - **`list`**: shows the removable disks you can write to.
 
 Safety: it never writes the disk the running system lives on, refuses non-removable disks unless you pass `--force-nonremovable`, and asks you to type the device path before erasing anything.
@@ -41,19 +42,22 @@ sudo booto-writer booto /dev/sdX --iso booto-v1.4.0-amd64.iso
 # Any Linux ISO: the checksum is required for URLs
 sudo booto-writer write <iso-url> /dev/sdX --sha256 <sha256-from-the-distro-site>
 sudo booto-writer write ubuntu-24.04-desktop-amd64.iso /dev/sdX
+
+# Windows installer (download the ISO from microsoft.com first)
+sudo booto-writer windows Win11_24H2_English_x64.iso /dev/sdX
 ```
 
 Downloads are cached in `~/.cache/booto-writer` (or `$XDG_CACHE_HOME`) and reused when the checksum still matches.
 
-The `booto` command needs `sgdisk` (gdisk), `mkfs.vfat` (dosfstools), `mkfs.ext4` (e2fsprogs), `partprobe` (parted), `udevadm`, `blockdev`, and `cryptsetup` for an encrypted report partition:
+The `booto` and `windows` commands need `mkfs.vfat` (dosfstools), `partprobe` (parted), `udevadm` and `blockdev`. `booto` also needs `sgdisk` (gdisk), `mkfs.ext4` (e2fsprogs) and `cryptsetup` for an encrypted report partition; `windows` needs `wimlib-imagex` (wimtools) when `install.wim` is over 4 GiB:
 
 ```bash
-sudo apt-get install -y gdisk dosfstools e2fsprogs parted udev util-linux cryptsetup
+sudo apt-get install -y gdisk dosfstools e2fsprogs parted udev util-linux cryptsetup wimtools
 ```
 
 ## Not supported yet
 
-- Windows installer USBs. Windows ISOs are not hybrid images, so `write` cannot make them boot.
+- Windows installer USBs for legacy BIOS PCs (the `windows` command makes UEFI-only USBs).
 - Running on Windows or macOS.
 
 ## Branches and releases

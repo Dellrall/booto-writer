@@ -4,6 +4,9 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/); ver
 
 ## [Unreleased]
 
+### Added
+- `windows`: Windows 10/11 installer USB for UEFI PCs (FAT32 partition, files copied from the ISO, `install.wim` over 4 GiB split with `wimlib-imagex`).
+
 ## [0.1.0] - 2026-11-05
 
 ### Added
