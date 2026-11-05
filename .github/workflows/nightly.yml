@@ -20,7 +20,7 @@ jobs:
       GH_TOKEN: ${{ github.token }}
       ASSET: booto-writer-nightly-x86_64-linux
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: nightly
           fetch-depth: 0
