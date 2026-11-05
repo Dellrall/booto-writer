@@ -56,6 +56,18 @@ enum Cmd {
         #[command(flatten)]
         safety: Safety,
     },
+    /// Windows 10/11 installer USB for UEFI PCs (FAT32; splits install.wim over 4 GiB, needs wimtools)
+    Windows {
+        /// Local path or http(s):// URL of the Windows ISO
+        iso: String,
+        /// Whole disk, e.g. /dev/sdb
+        device: String,
+        /// Expected SHA-256 of the ISO; required for URLs
+        #[arg(long)]
+        sha256: Option<String>,
+        #[command(flatten)]
+        safety: Safety,
+    },
 }
 
 #[derive(clap::Args)]
@@ -102,6 +114,25 @@ pub fn exec(cmd: &str, args: &[&str]) -> Result<()> {
     Ok(())
 }
 
+/// Downloads a URL (checksum required) or checks a local file against an optional checksum.
+fn resolve_image(image: &str, sha256: Option<String>) -> Result<PathBuf> {
+    let expected = sha256
+        .as_deref()
+        .map(download::normalize_sha256)
+        .transpose()?;
+    if image.starts_with("http://") || image.starts_with("https://") {
+        let Some(expected) = expected else {
+            bail!("--sha256 is required when downloading from a URL");
+        };
+        return download::fetch(image, &expected);
+    }
+    let path = PathBuf::from(image);
+    if let Some(expected) = expected {
+        download::verify(&path, &expected)?;
+    }
+    Ok(path)
+}
+
 fn main() -> Result<()> {
     match Cli::parse().cmd {
         Cmd::List { all } => device::print_list(all),
@@ -134,20 +165,21 @@ fn main() -> Result<()> {
         } => {
             device::require_root()?;
             let disk = device::prepare(&device, safety.force_nonremovable)?;
-            let path = if image.starts_with("http://") || image.starts_with("https://") {
-                let Some(expected) = sha256 else {
-                    bail!("--sha256 is required when downloading from a URL");
-                };
-                download::fetch(&image, &download::normalize_sha256(&expected)?)?
-            } else {
-                let path = PathBuf::from(&image);
-                if let Some(expected) = sha256 {
-                    download::verify(&path, &download::normalize_sha256(&expected)?)?;
-                }
-                path
-            };
+            let path = resolve_image(&image, sha256)?;
             device::confirm(&disk, safety.yes)?;
             flash::raw(&disk, &path)
+        }
+        Cmd::Windows {
+            iso,
+            device,
+            sha256,
+            safety,
+        } => {
+            device::require_root()?;
+            let disk = device::prepare(&device, safety.force_nonremovable)?;
+            let path = resolve_image(&iso, sha256)?;
+            device::confirm(&disk, safety.yes)?;
+            flash::windows(&disk, &path)
         }
     }
 }
