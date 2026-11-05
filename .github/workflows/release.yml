@@ -1,0 +1,38 @@
+name: Release
+
+# A v* tag (cut from nightly) becomes a pre-release. scripts/promote.sh later moves the stable branch to it
+# and marks it Latest, so stable trails nightly by however many releases you choose.
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-unknown-linux-musl
+      - name: Tag must match Cargo.toml version
+        run: |
+          version="$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[0].version')"
+          [ "v${version}" = "${GITHUB_REF_NAME}" ] || { echo "tag ${GITHUB_REF_NAME} != Cargo.toml ${version}"; exit 1; }
+      - run: sudo apt-get install -y musl-tools
+      - run: cargo test --locked
+      - name: Build static binary
+        run: |
+          asset="booto-writer-${GITHUB_REF_NAME}-x86_64-linux"
+          cargo build --release --locked --target x86_64-unknown-linux-musl
+          cp target/x86_64-unknown-linux-musl/release/booto-writer "$asset"
+          sha256sum "$asset" > "$asset.sha256"
+          echo "ASSET=$asset" >> "$GITHUB_ENV"
+      - name: Publish pre-release
+        run: |
+          gh release create "$GITHUB_REF_NAME" "$ASSET" "$ASSET.sha256" --prerelease \
+            --title "$GITHUB_REF_NAME" --generate-notes

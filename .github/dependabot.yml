@@ -1,0 +1,19 @@
+version: 2
+updates:
+  # Monthly and grouped: one PR per ecosystem keeps CI minutes low.
+  - package-ecosystem: cargo
+    directory: /
+    target-branch: nightly
+    schedule:
+      interval: monthly
+    groups:
+      cargo:
+        patterns: ['*']
+  - package-ecosystem: github-actions
+    directory: /
+    target-branch: nightly
+    schedule:
+      interval: monthly
+    groups:
+      actions:
+        patterns: ['*']

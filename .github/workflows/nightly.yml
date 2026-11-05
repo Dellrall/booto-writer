@@ -1,0 +1,58 @@
+name: Nightly
+
+# Daily build of the nightly branch into the rolling "nightly-build" pre-release. Skipped when nothing changed.
+on:
+  schedule:
+    - cron: '0 3 * * *'
+  workflow_dispatch:
+
+concurrency:
+  group: nightly
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  nightly:
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+      ASSET: booto-writer-nightly-x86_64-linux
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: nightly
+          fetch-depth: 0
+      - name: Skip when nothing changed since the last nightly
+        id: changed
+        run: |
+          last="$(git rev-parse -q --verify 'refs/tags/nightly-build^{commit}' || true)"
+          if [ "$last" = "$(git rev-parse HEAD)" ]; then
+            echo "build=false" >> "$GITHUB_OUTPUT"
+            echo "nightly-build already points at HEAD; nothing to do."
+          else
+            echo "build=true" >> "$GITHUB_OUTPUT"
+          fi
+      - uses: dtolnay/rust-toolchain@stable
+        if: steps.changed.outputs.build == 'true'
+        with:
+          targets: x86_64-unknown-linux-musl
+      - if: steps.changed.outputs.build == 'true'
+        run: sudo apt-get install -y musl-tools
+      - if: steps.changed.outputs.build == 'true'
+        run: cargo test --locked
+      - name: Build static binary
+        if: steps.changed.outputs.build == 'true'
+        run: |
+          cargo build --release --locked --target x86_64-unknown-linux-musl
+          cp target/x86_64-unknown-linux-musl/release/booto-writer "$ASSET"
+          sha256sum "$ASSET" > "$ASSET.sha256"
+      - name: Publish nightly-build pre-release
+        if: steps.changed.outputs.build == 'true'
+        run: |
+          sha="$(git rev-parse HEAD)"
+          gh release delete nightly-build --yes --cleanup-tag || true
+          gh release create nightly-build "$ASSET" "$ASSET.sha256" --prerelease --latest=false \
+            --target "$sha" --title "Nightly build" \
+            --notes "Built from \`${sha}\` on $(date -u +%Y-%m-%d). Untested between releases; use a stable release for real cases."

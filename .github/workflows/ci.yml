@@ -1,0 +1,30 @@
+name: CI
+
+# Runs only when code changes: docs-only pushes are skipped, and any commit with [skip ci] in its message too.
+on:
+  push:
+    branches: [nightly, stable]
+    paths-ignore: ['**.md', 'docs/**', 'LICENSE', '.gitignore']
+  pull_request:
+    paths-ignore: ['**.md', 'docs/**', 'LICENSE', '.gitignore']
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    name: fmt, clippy, test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo fmt --check
+      - run: cargo clippy --all-targets --locked -- -D warnings
+      - run: cargo test --locked
