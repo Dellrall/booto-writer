@@ -27,7 +27,7 @@ jobs:
       BIN: booto-writer-${{ inputs.name }}-x86_64-linux
       APPIMAGE: booto-writer-${{ inputs.name }}-x86_64.AppImage
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: ${{ inputs.ref }}
       - uses: dtolnay/rust-toolchain@stable
@@ -49,7 +49,7 @@ jobs:
         run: |
           "dist/$APPIMAGE" --version
           "dist/$APPIMAGE" list --all
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: packages-linux
           path: dist/
@@ -61,7 +61,7 @@ jobs:
     env:
       MSI: booto-writer-${{ inputs.name }}-x86_64-windows.msi
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: ${{ inputs.ref }}
       - uses: dtolnay/rust-toolchain@stable
@@ -73,7 +73,7 @@ jobs:
       - run: ./scripts/build-msi.ps1 "dist/$env:MSI"
       - name: Install the MSI and make a Booto USB on a virtual disk
         run: ./scripts/test-windows.ps1 "dist/$env:MSI"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: packages-windows
           path: dist/

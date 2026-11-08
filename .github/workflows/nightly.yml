@@ -20,7 +20,7 @@ jobs:
       build: ${{ steps.changed.outputs.build }}
       sha: ${{ steps.changed.outputs.sha }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: nightly
           fetch-depth: 0
@@ -54,7 +54,7 @@ jobs:
       GH_TOKEN: ${{ github.token }}
       SHA: ${{ needs.changed.outputs.sha }}
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           pattern: packages-*
           merge-multiple: true
