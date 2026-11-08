@@ -84,7 +84,7 @@ On Windows `booto` makes the live system only (the 3 GiB BOOTO_LIVE partition) a
 - `nightly` is the default branch. Changes land here through pull requests.
 - A `vX.Y.Z` tag on `nightly` builds a **pre-release** (`.github/workflows/release.yml`) once every package passes its tests (`.github/workflows/package.yml`: unit tests on Linux and Windows, an AppImage smoke test, and an MSI install that makes a Booto USB on a virtual disk). Bump `version` in `Cargo.toml` first; the workflow refuses a tag that does not match.
 - `scripts/promote.sh vX.Y.Z` fast-forwards `stable` to that tag and marks its release **Latest**. Promote a release once it has proven itself, so `stable` stays a few releases behind.
-- `.github/workflows/nightly.yml` rebuilds the `nightly-build` pre-release every day at 03:00 UTC, only when `nightly` has new commits.
+- `.github/workflows/nightly.yml` rebuilds the `nightly-build` pre-release every day at 03:00 UTC, only when `nightly` has new commits. Its files are replaced in place and its notes name the commit they were built from; the `nightly-build` tag itself does not move.
 
 ## Development
 

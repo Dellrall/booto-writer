@@ -1,6 +1,8 @@
 name: Nightly
 
 # Daily build of the nightly branch into the rolling "nightly-build" pre-release. Skipped when nothing changed.
+# The nightly-build tag never moves: the Actions token may not create or move a tag onto a commit that
+# changes .github/workflows. Each build replaces the release's files, and its notes name the commit built.
 on:
   schedule:
     - cron: '0 3 * * *'
@@ -26,13 +28,16 @@ jobs:
           fetch-depth: 0
       - name: Skip when nothing changed since the last nightly
         id: changed
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
-          last="$(git rev-parse -q --verify 'refs/tags/nightly-build^{commit}' || true)"
+          notes="$(gh release view nightly-build --json body --jq .body 2>/dev/null || true)"
+          last="$(grep -oE '[0-9a-f]{40}' <<< "$notes" | head -n1 || true)"
           sha="$(git rev-parse HEAD)"
           echo "sha=$sha" >> "$GITHUB_OUTPUT"
           if [ "$last" = "$sha" ]; then
             echo "build=false" >> "$GITHUB_OUTPUT"
-            echo "nightly-build already points at HEAD; nothing to do."
+            echo "nightly-build already holds a build of HEAD; nothing to do."
           else
             echo "build=true" >> "$GITHUB_OUTPUT"
           fi
@@ -61,7 +66,11 @@ jobs:
           path: dist
       - name: Publish nightly-build pre-release
         run: |
-          gh release delete nightly-build --repo "$GITHUB_REPOSITORY" --yes --cleanup-tag || true
-          gh release create nightly-build dist/* --repo "$GITHUB_REPOSITORY" --prerelease --latest=false \
-            --target "$SHA" --title "Nightly build" \
-            --notes "Built from \`${SHA}\` on $(date -u +%Y-%m-%d). Untested between releases; use a stable release for real cases."
+          notes="Built from \`${SHA}\` on $(date -u +%Y-%m-%d). Untested between releases; use a stable release for real cases. (The nightly-build tag itself stays put; the files are from that commit.)"
+          if ! gh release view nightly-build --repo "$GITHUB_REPOSITORY" > /dev/null 2>&1; then
+            # --verify-tag: the token must not create the tag (see the top of this file); push it once by hand.
+            gh release create nightly-build --repo "$GITHUB_REPOSITORY" --verify-tag --prerelease --latest=false \
+              --title "Nightly build" --notes "$notes"
+          fi
+          gh release upload nightly-build dist/* --repo "$GITHUB_REPOSITORY" --clobber
+          gh release edit nightly-build --repo "$GITHUB_REPOSITORY" --notes "$notes"
