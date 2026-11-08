@@ -35,6 +35,8 @@ sudo booto-writer booto /dev/sdX --data-size 512M
 
 # Same with Booto's newest pre-release, and a report partition without a passphrase
 sudo booto-writer booto /dev/sdX --channel nightly --no-encrypt
+# Booto publishes its 1.5.x releases (mouse support, quarantine export, heuristics) as -beta
+# pre-releases, so --channel stable still installs v1.4.0. Use --channel nightly to get 1.5.x.
 
 # Booto from an ISO you already have
 sudo booto-writer booto /dev/sdX --iso booto-v1.4.0-amd64.iso
