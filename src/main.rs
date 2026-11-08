@@ -2,11 +2,14 @@
 mod device;
 mod download;
 mod flash;
+#[cfg(windows)]
+mod win;
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Result, bail};
 use clap::{Parser, Subcommand, ValueEnum};
 use std::path::PathBuf;
-use std::process::Command;
+#[cfg(unix)]
+use {anyhow::Context, std::process::Command};
 
 #[derive(Parser)]
 #[command(
@@ -25,9 +28,10 @@ enum Cmd {
         #[arg(long)]
         all: bool,
     },
-    /// Download the latest Booto ISO, verify it, and set up a Booto USB (live + report partition)
+    /// Download the latest Booto ISO, verify it, and set up a Booto USB (live + report partition;
+    /// live system only on Windows)
     Booto {
-        /// Whole disk, e.g. /dev/sdb
+        /// Whole disk, e.g. /dev/sdb (Windows: \\.\PhysicalDrive2)
         device: String,
         /// stable = latest full release; nightly = newest release including pre-releases
         #[arg(long, value_enum, default_value_t = Channel::Stable)]
@@ -48,7 +52,7 @@ enum Cmd {
     Write {
         /// Local path or http(s):// URL
         image: String,
-        /// Whole disk, e.g. /dev/sdb
+        /// Whole disk, e.g. /dev/sdb (Windows: \\.\PhysicalDrive2)
         device: String,
         /// Expected SHA-256 of the image; required for URLs
         #[arg(long)]
@@ -87,6 +91,7 @@ pub enum Channel {
 }
 
 /// Runs a command and returns its stdout; fails with its stderr.
+#[cfg(unix)]
 pub fn run(cmd: &str, args: &[&str]) -> Result<String> {
     let out = Command::new(cmd)
         .args(args)
@@ -103,6 +108,7 @@ pub fn run(cmd: &str, args: &[&str]) -> Result<String> {
 }
 
 /// Runs a command with the terminal attached (progress output, passphrase prompts).
+#[cfg(unix)]
 pub fn exec(cmd: &str, args: &[&str]) -> Result<()> {
     let status = Command::new(cmd)
         .args(args)
@@ -148,6 +154,11 @@ fn main() -> Result<()> {
                 .as_deref()
                 .map(flash::parse_size_mib)
                 .transpose()?;
+            if cfg!(windows) && (data_mib.is_some() || no_encrypt) {
+                bail!(
+                    "on Windows booto-writer makes the live system only; --data-size and --no-encrypt need Linux"
+                );
+            }
             device::require_root()?;
             let disk = device::prepare(&device, safety.force_nonremovable)?;
             let iso = match iso {
@@ -155,7 +166,10 @@ fn main() -> Result<()> {
                 None => download::latest_booto(channel)?,
             };
             device::confirm(&disk, safety.yes)?;
-            flash::booto(&disk, &iso, data_mib, !no_encrypt)
+            #[cfg(unix)]
+            return flash::booto(&disk, &iso, data_mib, !no_encrypt);
+            #[cfg(windows)]
+            return win::booto_live(&disk, &iso);
         }
         Cmd::Write {
             image,
@@ -175,11 +189,19 @@ fn main() -> Result<()> {
             sha256,
             safety,
         } => {
-            device::require_root()?;
-            let disk = device::prepare(&device, safety.force_nonremovable)?;
-            let path = resolve_image(&iso, sha256)?;
-            device::confirm(&disk, safety.yes)?;
-            flash::windows(&disk, &path)
+            #[cfg(windows)]
+            {
+                let _ = (iso, device, sha256, safety);
+                bail!("the windows command needs Linux for now");
+            }
+            #[cfg(unix)]
+            {
+                device::require_root()?;
+                let disk = device::prepare(&device, safety.force_nonremovable)?;
+                let path = resolve_image(&iso, sha256)?;
+                device::confirm(&disk, safety.yes)?;
+                flash::windows(&disk, &path)
+            }
         }
     }
 }

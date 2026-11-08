@@ -105,7 +105,8 @@ fn cache_dir() -> Result<PathBuf> {
     let base = std::env::var_os("XDG_CACHE_HOME")
         .map(PathBuf::from)
         .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".cache")))
-        .context("neither XDG_CACHE_HOME nor HOME is set")?;
+        .or_else(|| std::env::var_os("LOCALAPPDATA").map(PathBuf::from))
+        .context("none of XDG_CACHE_HOME, HOME or LOCALAPPDATA is set")?;
     let dir = base.join("booto-writer");
     std::fs::create_dir_all(&dir)?;
     Ok(dir)

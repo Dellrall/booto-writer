@@ -1,14 +1,22 @@
 //! Writing media: raw byte-for-byte images, and the two-partition Booto layout.
-use crate::device::{Disk, unmount_all};
+use crate::device::Disk;
 use crate::download::pump;
-use crate::{exec, run};
 use anyhow::{Context, Result, bail};
 use std::fs::{File, OpenOptions};
 use std::io::{Read, Write};
-use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
-use std::path::{Path, PathBuf};
+use std::path::Path;
+#[cfg(unix)]
+use {
+    crate::device::unmount_all,
+    crate::{exec, run},
+    std::os::unix::fs::{DirBuilderExt, PermissionsExt},
+    std::path::PathBuf,
+};
 
-const LIVE_MIB: u64 = 3 * 1024;
+/// Size of the BOOTO_LIVE partition, as in Booto's scripts/setup_usb.sh.
+pub const LIVE_MIB: u64 = 3 * 1024;
+/// Raw disks take whole sectors only (Windows refuses anything else).
+const SECTOR: usize = 512;
 const MIN_DATA_MIB: u64 = 64;
 
 /// "512M" / "2G" -> MiB. The report partition needs at least 64 MiB (16 MiB of it is the LUKS2 header).
@@ -30,6 +38,7 @@ pub fn parse_size_mib(size: &str) -> Result<u64> {
     Ok(mib)
 }
 
+#[cfg(unix)]
 /// /dev/sdb -> /dev/sdb1; /dev/nvme0n1, /dev/mmcblk0 -> ...p1.
 pub fn part_path(disk: &str, n: u32) -> String {
     if disk.ends_with(|c: char| c.is_ascii_digit()) {
@@ -50,21 +59,28 @@ pub fn raw(disk: &Disk, image: &Path) -> Result<()> {
             disk.size >> 20
         );
     }
+    #[cfg(unix)]
     unmount_all(disk)?;
+    // Windows only lets a disk be written once no volume on it is mounted.
+    #[cfg(windows)]
+    crate::win::clear(disk)?;
 
     let src = File::open(image).with_context(|| format!("cannot open {}", image.display()))?;
-    let mut dst = OpenOptions::new()
+    let dst = OpenOptions::new()
         .write(true)
         .open(&disk.path)
         .with_context(|| format!("cannot open {}", disk.path))?;
-    let (written, _) = pump(src, Some(len), "Writing", |chunk| Ok(dst.write_all(chunk)?))?;
+    let mut dst = SectorWriter::new(dst);
+    let (written, _) = pump(src, Some(len), "Writing", |chunk| dst.write(chunk))?;
     println!("Flushing to the device...");
+    let dst = dst.finish()?;
     dst.sync_all()?;
     drop(dst);
 
     // Drop cached pages so the read-back comes from the device, not memory.
+    #[cfg(unix)]
     run("blockdev", &["--flushbufs", &disk.path])?;
-    let dev = File::open(&disk.path)?.take(len);
+    let dev = SectorReader::new(File::open(&disk.path)?, len);
     let (read_back, done) = pump(dev, Some(len), "Verifying", |_| Ok(()))?;
     if done != len || read_back != written {
         bail!(
@@ -78,9 +94,87 @@ pub fn raw(disk: &Disk, image: &Path) -> Result<()> {
     Ok(())
 }
 
+/// Passes on whole sectors only; `finish` pads the last one with zeros.
+struct SectorWriter<W: Write> {
+    inner: W,
+    pending: Vec<u8>,
+}
+
+impl<W: Write> SectorWriter<W> {
+    fn new(inner: W) -> Self {
+        Self {
+            inner,
+            pending: Vec::new(),
+        }
+    }
+
+    fn write(&mut self, data: &[u8]) -> Result<()> {
+        self.pending.extend_from_slice(data);
+        let whole = self.pending.len() / SECTOR * SECTOR;
+        self.inner.write_all(&self.pending[..whole])?;
+        self.pending.drain(..whole);
+        Ok(())
+    }
+
+    fn finish(mut self) -> Result<W> {
+        if !self.pending.is_empty() {
+            self.pending.resize(SECTOR, 0);
+            self.inner.write_all(&self.pending)?;
+        }
+        self.inner.flush()?;
+        Ok(self.inner)
+    }
+}
+
+/// Reads the first `len` bytes of a disk while asking it for whole sectors only.
+struct SectorReader<R: Read> {
+    inner: R,
+    left: u64,
+    buf: Vec<u8>,
+    pos: usize,
+    end: usize,
+}
+
+impl<R: Read> SectorReader<R> {
+    fn new(inner: R, len: u64) -> Self {
+        Self {
+            inner,
+            left: len,
+            buf: vec![0; 4 << 20],
+            pos: 0,
+            end: 0,
+        }
+    }
+}
+
+impl<R: Read> Read for SectorReader<R> {
+    fn read(&mut self, out: &mut [u8]) -> std::io::Result<usize> {
+        if self.pos == self.end {
+            if self.left == 0 {
+                return Ok(0);
+            }
+            let want = (self.left.min(self.buf.len() as u64) as usize).next_multiple_of(SECTOR);
+            let n = self.inner.read(&mut self.buf[..want])?;
+            let n = n.min(self.left as usize);
+            self.left -= n as u64;
+            (self.pos, self.end) = (0, n);
+            if n == 0 {
+                self.left = 0;
+                return Ok(0);
+            }
+        }
+        let n = out.len().min(self.end - self.pos);
+        out[..n].copy_from_slice(&self.buf[self.pos..self.pos + n]);
+        self.pos += n;
+        Ok(n)
+    }
+}
+
+#[cfg(unix)]
 /// Unmounts (and removes) a temporary mount point when dropped, so an error never leaves it mounted.
 struct TempMount(PathBuf);
 
+#[cfg(unix)]
 impl TempMount {
     fn new(source: &str, options: &[&str]) -> Result<Self> {
         let dir = std::env::temp_dir().join(format!(
@@ -100,6 +194,7 @@ impl TempMount {
     }
 }
 
+#[cfg(unix)]
 impl Drop for TempMount {
     fn drop(&mut self) {
         if let Some(dir) = self.0.to_str() {
@@ -109,15 +204,18 @@ impl Drop for TempMount {
     }
 }
 
+#[cfg(unix)]
 /// Closes the LUKS mapper when dropped.
 struct Mapper(&'static str);
 
+#[cfg(unix)]
 impl Drop for Mapper {
     fn drop(&mut self) {
         let _ = run("cryptsetup", &["close", self.0]);
     }
 }
 
+#[cfg(unix)]
 /// The layout Booto's scripts/setup_usb.sh makes: BOOTO_LIVE (FAT32, ISO files) + BOOTO_DATA (reports).
 pub fn booto(disk: &Disk, iso: &Path, data_mib: Option<u64>, encrypt: bool) -> Result<()> {
     let mut tools = vec![
@@ -257,6 +355,7 @@ pub fn booto(disk: &Disk, iso: &Path, data_mib: Option<u64>, encrypt: bool) -> R
     Ok(())
 }
 
+#[cfg(unix)]
 fn require_tools(tools: &[&str]) -> Result<()> {
     for tool in tools {
         run("sh", &["-c", &format!("command -v {tool}")])
@@ -265,9 +364,11 @@ fn require_tools(tools: &[&str]) -> Result<()> {
     Ok(())
 }
 
+#[cfg(unix)]
 /// FAT32 cannot hold a file of 4 GiB or more.
 const FAT32_MAX_FILE: u64 = (4 << 30) - 1;
 
+#[cfg(unix)]
 /// Windows installer USB for UEFI PCs: one FAT32 partition holding the ISO's files.
 /// Windows ISOs are not hybrid images, so they cannot be written raw. An install.wim too big
 /// for FAT32 is split into install.swm parts, which Windows Setup reads natively.
@@ -390,6 +491,31 @@ mod tests {
         }
     }
 
+    #[test]
+    fn sector_writer_pads_and_reader_trims() {
+        let image: Vec<u8> = (0..1300u32).map(|i| i as u8).collect();
+        let mut w = SectorWriter::new(Vec::new());
+        for chunk in image.chunks(700) {
+            w.write(chunk).unwrap();
+        }
+        let disk = w.finish().unwrap();
+        assert_eq!(disk.len(), 1536, "padded to whole sectors");
+        assert_eq!(&disk[..1300], &image[..]);
+        assert!(disk[1300..].iter().all(|&b| b == 0));
+
+        let mut back = Vec::new();
+        SectorReader::new(&disk[..], 1300)
+            .read_to_end(&mut back)
+            .unwrap();
+        assert_eq!(back, image);
+        let mut short = Vec::new();
+        SectorReader::new(&disk[..512], 1300)
+            .read_to_end(&mut short)
+            .unwrap();
+        assert_eq!(short.len(), 512, "a short device stops early");
+    }
+
+    #[cfg(unix)]
     #[test]
     fn partition_paths() {
         assert_eq!(part_path("/dev/sdb", 2), "/dev/sdb2");

@@ -1,10 +1,14 @@
 //! Disk discovery (lsblk) and the safety checks that run before anything is written.
-use crate::run;
-use anyhow::{Context, Result, bail};
-use serde_json::Value;
+//! On Windows the platform half comes from `crate::win`.
+#[cfg(windows)]
+pub use crate::win::{disks, prepare, require_root};
+use anyhow::{Result, bail};
 use std::io::{BufRead, Write};
-use std::os::unix::fs::MetadataExt;
-use std::path::PathBuf;
+#[cfg(unix)]
+use {
+    crate::run, anyhow::Context, serde_json::Value, std::os::unix::fs::MetadataExt,
+    std::path::PathBuf,
+};
 
 pub struct Disk {
     pub path: String,
@@ -14,6 +18,7 @@ pub struct Disk {
     pub tran: String,
 }
 
+#[cfg(unix)]
 pub fn require_root() -> Result<()> {
     // /proc/self is owned by the effective user of this process.
     if std::fs::metadata("/proc/self")?.uid() != 0 {
@@ -22,6 +27,7 @@ pub fn require_root() -> Result<()> {
     Ok(())
 }
 
+#[cfg(unix)]
 fn disks() -> Result<Vec<Disk>> {
     parse_lsblk(&run(
         "lsblk",
@@ -29,6 +35,7 @@ fn disks() -> Result<Vec<Disk>> {
     )?)
 }
 
+#[cfg(unix)]
 /// Old util-linux prints every value as a string, new versions print numbers and booleans.
 fn parse_lsblk(json: &str) -> Result<Vec<Disk>> {
     let v: Value = serde_json::from_str(json).context("lsblk printed invalid JSON")?;
@@ -82,10 +89,12 @@ pub fn print_list(all: bool) -> Result<()> {
     Ok(())
 }
 
+#[cfg(unix)]
 fn canonical(path: &str) -> Option<PathBuf> {
     std::fs::canonicalize(path).ok()
 }
 
+#[cfg(unix)]
 /// Disks that back the running system: never written, even with --force-nonremovable.
 fn system_disks() -> Vec<PathBuf> {
     let mut found = Vec::new();
@@ -110,6 +119,7 @@ fn system_disks() -> Vec<PathBuf> {
     found
 }
 
+#[cfg(unix)]
 /// Resolves `path` to a whole, writable disk or explains why it is refused.
 pub fn prepare(path: &str, force_nonremovable: bool) -> Result<Disk> {
     let want = canonical(path).with_context(|| format!("{path} does not exist"))?;
@@ -150,6 +160,7 @@ pub fn confirm(disk: &Disk, yes: bool) -> Result<()> {
     Ok(())
 }
 
+#[cfg(unix)]
 /// Unmounts every mounted partition of `disk`; fails if any refuses.
 pub fn unmount_all(disk: &Disk) -> Result<()> {
     for line in run("lsblk", &["-nrpo", "PATH,MOUNTPOINT", &disk.path])?.lines() {
@@ -163,6 +174,7 @@ pub fn unmount_all(disk: &Disk) -> Result<()> {
     Ok(())
 }
 
+#[cfg(unix)]
 #[cfg(test)]
 mod tests {
     use super::*;
