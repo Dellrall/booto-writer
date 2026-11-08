@@ -1,0 +1,17 @@
+<!-- WiX 5 installer for booto-writer: built by scripts/build-msi.ps1. Version and Exe come from -d. -->
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
+  <Package Name="booto-writer" Manufacturer="Dellrall" Version="$(Version)"
+           UpgradeCode="1f3cbef9-7464-4d97-ad3c-4709a5252a00" Scope="perMachine">
+    <MajorUpgrade DowngradeErrorMessage="A newer booto-writer is already installed." />
+    <MediaTemplate EmbedCab="yes" />
+    <StandardDirectory Id="ProgramFiles64Folder">
+      <Directory Id="INSTALLFOLDER" Name="booto-writer">
+        <Component Id="Exe">
+          <File Source="$(Exe)" Name="booto-writer.exe" KeyPath="yes" />
+          <!-- Lets an Administrator terminal run booto-writer from anywhere. -->
+          <Environment Id="PathEntry" Name="PATH" Value="[INSTALLFOLDER]" Part="last" Action="set" System="yes" />
+        </Component>
+      </Directory>
+    </StandardDirectory>
+  </Package>
+</Wix>

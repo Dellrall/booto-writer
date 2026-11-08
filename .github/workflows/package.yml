@@ -1,0 +1,80 @@
+name: Package
+
+# Tests and builds every download on its own OS, then tests the packages themselves:
+# Linux: static binary + AppImage; Windows: MSI, installed and run end to end on a virtual disk.
+# Called by CI, Nightly and Release; they publish the "packages-*" artifacts.
+on:
+  workflow_call:
+    inputs:
+      name:
+        description: Middle of the asset names, e.g. v0.2.0 or nightly
+        required: true
+        type: string
+      ref:
+        description: Commit, branch or tag to build (default the triggering commit)
+        required: false
+        type: string
+        default: ''
+
+permissions:
+  contents: read
+
+jobs:
+  linux:
+    name: Linux binary + AppImage
+    runs-on: ubuntu-latest
+    env:
+      BIN: booto-writer-${{ inputs.name }}-x86_64-linux
+      APPIMAGE: booto-writer-${{ inputs.name }}-x86_64.AppImage
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref }}
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-unknown-linux-musl
+      - uses: Swatinem/rust-cache@v2
+      - run: sudo apt-get install -y musl-tools
+      - run: cargo test --locked
+      - name: Build static binary
+        run: |
+          mkdir dist
+          cargo build --release --locked --target x86_64-unknown-linux-musl
+          cp target/x86_64-unknown-linux-musl/release/booto-writer "dist/$BIN"
+          (cd dist && sha256sum "$BIN" > "$BIN.sha256")
+      - run: scripts/build-appimage.sh "dist/$BIN" "dist/$APPIMAGE"
+      - name: Smoke-test the AppImage
+        env:
+          APPIMAGE_EXTRACT_AND_RUN: 1
+        run: |
+          "dist/$APPIMAGE" --version
+          "dist/$APPIMAGE" list --all
+      - uses: actions/upload-artifact@v4
+        with:
+          name: packages-linux
+          path: dist/
+          if-no-files-found: error
+
+  windows:
+    name: Windows MSI
+    runs-on: windows-latest
+    env:
+      MSI: booto-writer-${{ inputs.name }}-x86_64-windows.msi
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref }}
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo clippy --all-targets --locked -- -D warnings
+      - run: cargo test --locked
+      - run: ./scripts/build-msi.ps1 "dist/$env:MSI"
+      - name: Install the MSI and make a Booto USB on a virtual disk
+        run: ./scripts/test-windows.ps1 "dist/$env:MSI"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: packages-windows
+          path: dist/
+          if-no-files-found: error

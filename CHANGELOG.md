@@ -6,6 +6,8 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/); ver
 
 ### Added
 - `windows`: Windows 10/11 installer USB for UEFI PCs (FAT32 partition, files copied from the ISO, `install.wim` over 4 GiB split with `wimlib-imagex`).
+- Runs on Windows: `list`, `write`, and `booto` (live system only; the report partition needs Linux). Disks are `\\.\PhysicalDriveN`.
+- Releases ship a Linux AppImage and a Windows MSI next to the static Linux binary. CI, nightly and tagged releases build and test every package first, including an MSI install that makes a Booto USB on a virtual disk.
 
 ## [0.1.0] - 2026-11-05
 

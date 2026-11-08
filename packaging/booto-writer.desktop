@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=booto-writer
+Comment=Write Booto and other bootable USB drives
+Exec=booto-writer
+Icon=booto-writer
+Terminal=true
+Categories=Utility;
