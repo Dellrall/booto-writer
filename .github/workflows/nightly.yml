@@ -11,14 +11,14 @@ concurrency:
   cancel-in-progress: false
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
-  nightly:
+  changed:
     runs-on: ubuntu-latest
-    env:
-      GH_TOKEN: ${{ github.token }}
-      ASSET: booto-writer-nightly-x86_64-linux
+    outputs:
+      build: ${{ steps.changed.outputs.build }}
+      sha: ${{ steps.changed.outputs.sha }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -28,31 +28,40 @@ jobs:
         id: changed
         run: |
           last="$(git rev-parse -q --verify 'refs/tags/nightly-build^{commit}' || true)"
-          if [ "$last" = "$(git rev-parse HEAD)" ]; then
+          sha="$(git rev-parse HEAD)"
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+          if [ "$last" = "$sha" ]; then
             echo "build=false" >> "$GITHUB_OUTPUT"
             echo "nightly-build already points at HEAD; nothing to do."
           else
             echo "build=true" >> "$GITHUB_OUTPUT"
           fi
-      - uses: dtolnay/rust-toolchain@stable
-        if: steps.changed.outputs.build == 'true'
+
+  package:
+    needs: changed
+    if: needs.changed.outputs.build == 'true'
+    uses: ./.github/workflows/package.yml
+    with:
+      name: nightly
+      ref: ${{ needs.changed.outputs.sha }}
+
+  publish:
+    needs: [changed, package]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      SHA: ${{ needs.changed.outputs.sha }}
+    steps:
+      - uses: actions/download-artifact@v4
         with:
-          targets: x86_64-unknown-linux-musl
-      - if: steps.changed.outputs.build == 'true'
-        run: sudo apt-get install -y musl-tools
-      - if: steps.changed.outputs.build == 'true'
-        run: cargo test --locked
-      - name: Build static binary
-        if: steps.changed.outputs.build == 'true'
-        run: |
-          cargo build --release --locked --target x86_64-unknown-linux-musl
-          cp target/x86_64-unknown-linux-musl/release/booto-writer "$ASSET"
-          sha256sum "$ASSET" > "$ASSET.sha256"
+          pattern: packages-*
+          merge-multiple: true
+          path: dist
       - name: Publish nightly-build pre-release
-        if: steps.changed.outputs.build == 'true'
         run: |
-          sha="$(git rev-parse HEAD)"
-          gh release delete nightly-build --yes --cleanup-tag || true
-          gh release create nightly-build "$ASSET" "$ASSET.sha256" --prerelease --latest=false \
-            --target "$sha" --title "Nightly build" \
-            --notes "Built from \`${sha}\` on $(date -u +%Y-%m-%d). Untested between releases; use a stable release for real cases."
+          gh release delete nightly-build --repo "$GITHUB_REPOSITORY" --yes --cleanup-tag || true
+          gh release create nightly-build dist/* --repo "$GITHUB_REPOSITORY" --prerelease --latest=false \
+            --target "$SHA" --title "Nightly build" \
+            --notes "Built from \`${SHA}\` on $(date -u +%Y-%m-%d). Untested between releases; use a stable release for real cases."
