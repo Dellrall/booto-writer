@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2024"
 rust-version = "1.88"
 description = "Download and write bootable USB media: Booto setup, or any hybrid ISO / raw image"
-license = "MIT"
+license = "GPL-3.0-or-later"
 repository = "https://github.com/Dellrall/booto-writer"
 publish = false
 

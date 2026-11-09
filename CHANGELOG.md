@@ -10,6 +10,9 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/); ver
 - Runs on Windows: `list`, `write`, and `booto` (live system only; the report partition needs Linux). Disks are `\\.\PhysicalDriveN`.
 - Releases ship a Linux AppImage and a Windows MSI next to the static Linux binary. CI, nightly and tagged releases build and test every package first, including an MSI install that makes a Booto USB on a virtual disk.
 
+### Changed
+- License: GPL-3.0-or-later (was MIT).
+
 ## [0.1.0] - 2026-11-05
 
 ### Added
