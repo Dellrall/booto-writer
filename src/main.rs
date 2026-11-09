@@ -31,8 +31,8 @@ enum Cmd {
     /// Download the latest Booto ISO, verify it, and set up a Booto USB (live + report partition;
     /// live system only on Windows)
     Booto {
-        /// Whole disk, e.g. /dev/sdb (Windows: \\.\PhysicalDrive2)
-        device: String,
+        /// Whole disk, e.g. /dev/sdb (Windows: \\.\PhysicalDrive2); omit to pick from a list
+        device: Option<String>,
         /// stable = latest full release; nightly = newest release including pre-releases
         #[arg(long, value_enum, default_value_t = Channel::Stable)]
         channel: Channel,
@@ -52,8 +52,8 @@ enum Cmd {
     Write {
         /// Local path or http(s):// URL
         image: String,
-        /// Whole disk, e.g. /dev/sdb (Windows: \\.\PhysicalDrive2)
-        device: String,
+        /// Whole disk, e.g. /dev/sdb (Windows: \\.\PhysicalDrive2); omit to pick from a list
+        device: Option<String>,
         /// Expected SHA-256 of the image; required for URLs
         #[arg(long)]
         sha256: Option<String>,
@@ -64,8 +64,8 @@ enum Cmd {
     Windows {
         /// Local path or http(s):// URL of the Windows ISO
         iso: String,
-        /// Whole disk, e.g. /dev/sdb
-        device: String,
+        /// Whole disk, e.g. /dev/sdb; omit to pick from a list
+        device: Option<String>,
         /// Expected SHA-256 of the ISO; required for URLs
         #[arg(long)]
         sha256: Option<String>,
@@ -139,6 +139,16 @@ fn resolve_image(image: &str, sha256: Option<String>) -> Result<PathBuf> {
     Ok(path)
 }
 
+/// Root check, then the given disk or one picked from the removable list, through the safety checks.
+fn target(device: Option<String>, safety: &Safety) -> Result<device::Disk> {
+    device::require_root()?;
+    let path = match device {
+        Some(path) => path,
+        None => device::pick()?,
+    };
+    device::prepare(&path, safety.force_nonremovable)
+}
+
 fn main() -> Result<()> {
     match Cli::parse().cmd {
         Cmd::List { all } => device::print_list(all),
@@ -159,8 +169,7 @@ fn main() -> Result<()> {
                     "on Windows booto-writer makes the live system only; --data-size and --no-encrypt need Linux"
                 );
             }
-            device::require_root()?;
-            let disk = device::prepare(&device, safety.force_nonremovable)?;
+            let disk = target(device, &safety)?;
             let iso = match iso {
                 Some(path) => path,
                 None => download::latest_booto(channel)?,
@@ -177,8 +186,7 @@ fn main() -> Result<()> {
             sha256,
             safety,
         } => {
-            device::require_root()?;
-            let disk = device::prepare(&device, safety.force_nonremovable)?;
+            let disk = target(device, &safety)?;
             let path = resolve_image(&image, sha256)?;
             device::confirm(&disk, safety.yes)?;
             flash::raw(&disk, &path)
@@ -196,8 +204,7 @@ fn main() -> Result<()> {
             }
             #[cfg(unix)]
             {
-                device::require_root()?;
-                let disk = device::prepare(&device, safety.force_nonremovable)?;
+                let disk = target(device, &safety)?;
                 let path = resolve_image(&iso, sha256)?;
                 device::confirm(&disk, safety.yes)?;
                 flash::windows(&disk, &path)

@@ -34,6 +34,9 @@ Or build it: `cargo build --release` (Rust 1.88 or newer).
 ```bash
 booto-writer list
 
+# Leave out the device to pick a removable disk from a numbered list
+sudo booto-writer booto
+
 # Booto USB, newest full release, 512 MiB encrypted report partition
 sudo booto-writer booto /dev/sdX --data-size 512M
 
