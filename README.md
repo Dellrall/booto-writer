@@ -34,6 +34,9 @@ Or build it: `cargo build --release` (Rust 1.88 or newer).
 ```bash
 booto-writer list
 
+# Leave out the device to pick a removable disk from a numbered list
+sudo booto-writer booto
+
 # Booto USB, newest full release, 512 MiB encrypted report partition
 sudo booto-writer booto /dev/sdX --data-size 512M
 
@@ -96,4 +99,4 @@ CI runs those three checks, and builds and tests every package, on pull requests
 
 ## License
 
-MIT, see [LICENSE](LICENSE).
+Copyright (c) 2026 Lye Wei Lun and booto-writer contributors. GPL-3.0-or-later: you may redistribute and modify it under the GNU General Public License, version 3 or any later version; see [LICENSE](LICENSE).

@@ -160,6 +160,36 @@ pub fn confirm(disk: &Disk, yes: bool) -> Result<()> {
     Ok(())
 }
 
+/// Numbered list of removable disks; returns the path of the one the user types the number of.
+pub fn pick() -> Result<String> {
+    let list: Vec<Disk> = disks()?.into_iter().filter(|d| d.removable).collect();
+    if list.is_empty() {
+        bail!("no removable disks found; plug in the USB, or pass the device path");
+    }
+    for (i, d) in list.iter().enumerate() {
+        println!(
+            "  {}) {}  {:.1} GiB  {} {}",
+            i + 1,
+            d.path,
+            gib(d.size),
+            d.tran,
+            d.model
+        );
+    }
+    print!("Write to which disk? [1-{}]: ", list.len());
+    std::io::stdout().flush()?;
+    let mut answer = String::new();
+    std::io::stdin().lock().read_line(&mut answer)?;
+    choose(&list, &answer)
+}
+
+fn choose(list: &[Disk], answer: &str) -> Result<String> {
+    match answer.trim().parse::<usize>() {
+        Ok(n) if (1..=list.len()).contains(&n) => Ok(list[n - 1].path.clone()),
+        _ => bail!("no disk chosen; nothing was written"),
+    }
+}
+
 #[cfg(unix)]
 /// Unmounts every mounted partition of `disk`; fails if any refuses.
 pub fn unmount_all(disk: &Disk) -> Result<()> {
@@ -197,5 +227,20 @@ mod tests {
         let disks = parse_lsblk(old).unwrap();
         assert_eq!(disks[0].size, 16_008_609_792);
         assert!(disks[0].removable);
+    }
+
+    #[test]
+    fn choose_takes_only_a_listed_number() {
+        let list = parse_lsblk(
+            r#"{"blockdevices":[
+            {"path":"/dev/sdb","size":1,"model":"A","rm":true,"tran":"usb","type":"disk"},
+            {"path":"/dev/sdc","size":1,"model":"B","rm":true,"tran":"usb","type":"disk"}]}"#,
+        )
+        .unwrap();
+        assert_eq!(choose(&list, "2\n").unwrap(), "/dev/sdc");
+        assert_eq!(choose(&list, " 1 ").unwrap(), "/dev/sdb");
+        for bad in ["0", "3", "", "sdb", "-1"] {
+            assert!(choose(&list, bad).is_err(), "{bad:?} must not pick a disk");
+        }
     }
 }
