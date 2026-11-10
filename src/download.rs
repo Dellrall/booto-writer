@@ -11,10 +11,15 @@ const BOOTO_REPO: &str = "Dellrall/Booto";
 const USER_AGENT: &str = concat!("booto-writer/", env!("CARGO_PKG_VERSION"));
 
 fn get(url: &str) -> Result<ureq::http::Response<ureq::Body>> {
-    ureq::get(url)
-        .header("User-Agent", USER_AGENT)
-        .call()
-        .with_context(|| format!("GET {url}"))
+    let mut req = ureq::get(url).header("User-Agent", USER_AGENT);
+    // Unauthenticated API calls are limited to 60 an hour per IP (shared CI runners hit that).
+    // The token only ever goes to the API, never to download hosts.
+    if url.starts_with("https://api.github.com/")
+        && let Some(token) = std::env::var("GITHUB_TOKEN").ok().filter(|t| !t.is_empty())
+    {
+        req = req.header("Authorization", format!("Bearer {token}"));
+    }
+    req.call().with_context(|| format!("GET {url}"))
 }
 
 fn get_string(url: &str) -> Result<String> {
@@ -28,10 +33,26 @@ pub struct ReleaseIso {
     pub sha256_url: String,
 }
 
-/// Picks the ISO and its .sha256 from a GitHub release object, or the first entry of a release list.
+/// Picks the ISO and its .sha256 from a GitHub release object, or from the newest release in a list
+/// that has both (a release whose ISO is still uploading is skipped).
 fn pick_iso(json: &str) -> Result<ReleaseIso> {
     let v: Value = serde_json::from_str(json).context("GitHub returned invalid JSON")?;
-    let release = if v.is_array() { &v[0] } else { &v };
+    let Some(list) = v.as_array() else {
+        return iso_of(&v);
+    };
+    let mut first_err = None;
+    for release in list {
+        match iso_of(release) {
+            Ok(iso) => return Ok(iso),
+            Err(e) => {
+                first_err.get_or_insert(e);
+            }
+        }
+    }
+    Err(first_err.unwrap_or_else(|| anyhow::anyhow!("no release found")))
+}
+
+fn iso_of(release: &Value) -> Result<ReleaseIso> {
     let tag = release["tag_name"]
         .as_str()
         .context("no release found")?
@@ -81,7 +102,7 @@ pub fn latest_booto(channel: Channel) -> Result<PathBuf> {
     let api = match channel {
         Channel::Stable => format!("https://api.github.com/repos/{BOOTO_REPO}/releases/latest"),
         Channel::Nightly => {
-            format!("https://api.github.com/repos/{BOOTO_REPO}/releases?per_page=1")
+            format!("https://api.github.com/repos/{BOOTO_REPO}/releases?per_page=5")
         }
     };
     let iso = pick_iso(&get_string(&api)?)?;
@@ -237,6 +258,11 @@ mod tests {
         );
 
         let list = format!("[{release}]");
+        assert_eq!(pick_iso(&list).unwrap().tag, "v1.4.0");
+
+        // The newest release is still uploading its ISO: take the next one.
+        let uploading = r#"{"tag_name":"v1.5.0-beta","assets":[]}"#;
+        let list = format!("[{uploading},{release}]");
         assert_eq!(pick_iso(&list).unwrap().tag, "v1.4.0");
     }
 
