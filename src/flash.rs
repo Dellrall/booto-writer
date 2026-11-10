@@ -8,7 +8,7 @@ use std::path::Path;
 #[cfg(unix)]
 use {
     crate::device::unmount_all,
-    crate::{exec, run},
+    crate::{exec, run, run_input},
     std::os::unix::fs::{DirBuilderExt, PermissionsExt},
     std::path::PathBuf,
 };
@@ -18,6 +18,27 @@ pub const LIVE_MIB: u64 = 3 * 1024;
 /// Raw disks take whole sectors only (Windows refuses anything else).
 const SECTOR: usize = 512;
 const MIN_DATA_MIB: u64 = 64;
+/// Room FAT32 needs on BOOTO_LIVE besides the ISO's files (two FATs, directories, cluster slack).
+const FAT_OVERHEAD_MIB: u64 = 32;
+/// A raw write flushes to the device this often, so progress shows the device, not the page cache.
+const SYNC_EVERY: u64 = 64 << 20;
+
+/// Fails early when the ISO's files cannot fit the 3 GiB BOOTO_LIVE partition.
+pub fn check_iso_fits(iso: &Path) -> Result<()> {
+    let len = std::fs::metadata(iso)
+        .with_context(|| format!("cannot open {}", iso.display()))?
+        .len();
+    let room = (LIVE_MIB - FAT_OVERHEAD_MIB) << 20;
+    if len > room {
+        bail!(
+            "{} is {} MiB; the BOOTO_LIVE partition holds at most {} MiB of files",
+            iso.display(),
+            len >> 20,
+            room >> 20
+        );
+    }
+    Ok(())
+}
 
 /// "512M" / "2G" -> MiB. The report partition needs at least 64 MiB (16 MiB of it is the LUKS2 header).
 pub fn parse_size_mib(size: &str) -> Result<u64> {
@@ -71,7 +92,16 @@ pub fn raw(disk: &Disk, image: &Path) -> Result<()> {
         .open(&disk.path)
         .with_context(|| format!("cannot open {}", disk.path))?;
     let mut dst = SectorWriter::new(dst);
-    let (written, _) = pump(src, Some(len), "Writing", |chunk| dst.write(chunk))?;
+    let mut unsynced = 0u64;
+    let (written, _) = pump(src, Some(len), "Writing", |chunk| {
+        dst.write(chunk)?;
+        unsynced += chunk.len() as u64;
+        if unsynced >= SYNC_EVERY {
+            dst.inner.sync_data()?;
+            unsynced = 0;
+        }
+        Ok(())
+    })?;
     println!("Flushing to the device...");
     let dst = dst.finish()?;
     dst.sync_all()?;
@@ -206,13 +236,43 @@ impl Drop for TempMount {
 
 #[cfg(unix)]
 /// Closes the LUKS mapper when dropped.
-struct Mapper(&'static str);
+struct Mapper(String);
 
 #[cfg(unix)]
 impl Drop for Mapper {
     fn drop(&mut self) {
-        let _ = run("cryptsetup", &["close", self.0]);
+        let _ = run("cryptsetup", &["close", &self.0]);
     }
+}
+
+#[cfg(unix)]
+/// Asks for the report passphrase twice on the terminal (no echo), or reads one line from stdin
+/// when stdin is not a terminal (scripts and CI).
+fn ask_passphrase() -> Result<String> {
+    use std::io::{BufRead, IsTerminal};
+    if !std::io::stdin().is_terminal() {
+        let mut line = String::new();
+        std::io::stdin().lock().read_line(&mut line)?;
+        let pass = line.strip_suffix('\n').unwrap_or(&line);
+        let pass = pass.strip_suffix('\r').unwrap_or(pass);
+        if pass.is_empty() {
+            bail!("no passphrase on stdin; pipe one line, or pass --no-encrypt");
+        }
+        return Ok(pass.to_string());
+    }
+    println!("Choose the passphrase that protects your reports. Booto asks for it at every start.");
+    for _ in 0..3 {
+        let pass = rpassword::prompt_password("Passphrase: ")?;
+        if pass.is_empty() {
+            eprintln!("The passphrase must not be empty.");
+            continue;
+        }
+        if rpassword::prompt_password("Same passphrase again: ")? == pass {
+            return Ok(pass);
+        }
+        eprintln!("The passphrases did not match.");
+    }
+    bail!("no passphrase chosen; nothing was written to the report partition")
 }
 
 #[cfg(unix)]
@@ -243,6 +303,12 @@ pub fn booto(disk: &Disk, iso: &Path, data_mib: Option<u64>, encrypt: bool) -> R
         );
     }
     let iso = iso.to_str().context("ISO path is not UTF-8")?;
+    // Asked before anything is erased, so a typo or Ctrl-C leaves the USB as it was.
+    let passphrase = if encrypt {
+        Some(ask_passphrase()?)
+    } else {
+        None
+    };
     unmount_all(disk)?;
 
     println!("[1/4] Partitioning {}", disk.path);
@@ -295,23 +361,29 @@ pub fn booto(disk: &Disk, iso: &Path, data_mib: Option<u64>, encrypt: bool) -> R
     println!("[3/4] Creating the report partition on {data}");
     let mut _mapper = None;
     let mut fs_dev = data.clone();
-    if encrypt {
-        println!("Choose the passphrase that protects your reports (asked twice):");
-        exec(
+    if let Some(pass) = &passphrase {
+        // --key-file=- reads the passphrase from stdin up to EOF, so it is sent without a newline;
+        // Booto's prompt at start gives the same bytes.
+        run_input(
             "cryptsetup",
             &[
                 "luksFormat",
                 "--type",
                 "luks2",
                 "--batch-mode",
-                "--verify-passphrase",
+                "--key-file=-",
                 &data,
             ],
+            pass.as_bytes(),
         )?;
-        println!("Enter it once more to open the partition:");
-        exec("cryptsetup", &["open", &data, "booto_writer_init"])?;
-        _mapper = Some(Mapper("booto_writer_init"));
-        fs_dev = "/dev/mapper/booto_writer_init".to_string();
+        let name = format!("booto_writer_{}", std::process::id());
+        run_input(
+            "cryptsetup",
+            &["open", "--key-file=-", &data, &name],
+            pass.as_bytes(),
+        )?;
+        fs_dev = format!("/dev/mapper/{name}");
+        _mapper = Some(Mapper(name));
     }
     // 1 KiB blocks + inline_data: a report and its seal take ~2 KiB instead of 16; -m 0 drops the root reserve.
     run(

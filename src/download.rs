@@ -3,18 +3,48 @@ use crate::Channel;
 use anyhow::{Context, Result, bail};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
-use std::fs::File;
+use std::fs::{File, OpenOptions};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
+use std::time::Duration;
 
 const BOOTO_REPO: &str = "Dellrall/Booto";
 const USER_AGENT: &str = concat!("booto-writer/", env!("CARGO_PKG_VERSION"));
 
+/// Download attempts before giving up; each later one resumes where the last stopped.
+const ATTEMPTS: u32 = 3;
+
+/// A stalled connection fails after a minute instead of hanging forever.
+fn agent() -> &'static ureq::Agent {
+    static AGENT: OnceLock<ureq::Agent> = OnceLock::new();
+    AGENT.get_or_init(|| {
+        ureq::Agent::config_builder()
+            .timeout_connect(Some(Duration::from_secs(30)))
+            .timeout_per_read(Some(Duration::from_secs(60)))
+            .build()
+            .into()
+    })
+}
+
 fn get(url: &str) -> Result<ureq::http::Response<ureq::Body>> {
-    ureq::get(url)
-        .header("User-Agent", USER_AGENT)
-        .call()
-        .with_context(|| format!("GET {url}"))
+    get_from(url, 0)
+}
+
+/// GET `url`, asking for the bytes from `offset` on when it is not 0.
+fn get_from(url: &str, offset: u64) -> Result<ureq::http::Response<ureq::Body>> {
+    let mut req = agent().get(url).header("User-Agent", USER_AGENT);
+    if offset > 0 {
+        req = req.header("Range", format!("bytes={offset}-"));
+    }
+    // Unauthenticated API calls are limited to 60 an hour per IP (shared CI runners hit that).
+    // The token only ever goes to the API, never to download hosts.
+    if url.starts_with("https://api.github.com/")
+        && let Some(token) = std::env::var("GITHUB_TOKEN").ok().filter(|t| !t.is_empty())
+    {
+        req = req.header("Authorization", format!("Bearer {token}"));
+    }
+    req.call().with_context(|| format!("GET {url}"))
 }
 
 fn get_string(url: &str) -> Result<String> {
@@ -28,10 +58,26 @@ pub struct ReleaseIso {
     pub sha256_url: String,
 }
 
-/// Picks the ISO and its .sha256 from a GitHub release object, or the first entry of a release list.
+/// Picks the ISO and its .sha256 from a GitHub release object, or from the newest release in a list
+/// that has both (a release whose ISO is still uploading is skipped).
 fn pick_iso(json: &str) -> Result<ReleaseIso> {
     let v: Value = serde_json::from_str(json).context("GitHub returned invalid JSON")?;
-    let release = if v.is_array() { &v[0] } else { &v };
+    let Some(list) = v.as_array() else {
+        return iso_of(&v);
+    };
+    let mut first_err = None;
+    for release in list {
+        match iso_of(release) {
+            Ok(iso) => return Ok(iso),
+            Err(e) => {
+                first_err.get_or_insert(e);
+            }
+        }
+    }
+    Err(first_err.unwrap_or_else(|| anyhow::anyhow!("no release found")))
+}
+
+fn iso_of(release: &Value) -> Result<ReleaseIso> {
     let tag = release["tag_name"]
         .as_str()
         .context("no release found")?
@@ -81,13 +127,15 @@ pub fn latest_booto(channel: Channel) -> Result<PathBuf> {
     let api = match channel {
         Channel::Stable => format!("https://api.github.com/repos/{BOOTO_REPO}/releases/latest"),
         Channel::Nightly => {
-            format!("https://api.github.com/repos/{BOOTO_REPO}/releases?per_page=1")
+            format!("https://api.github.com/repos/{BOOTO_REPO}/releases?per_page=5")
         }
     };
     let iso = pick_iso(&get_string(&api)?)?;
     println!("Booto {}: {}", iso.tag, iso.name);
     let expected = normalize_sha256(&get_string(&iso.sha256_url)?)?;
-    download_to_cache(&iso.url, &iso.name, &expected)
+    let path = download_to_cache(&iso.url, &iso.name, &expected)?;
+    prune_booto_cache(&path);
+    Ok(path)
 }
 
 /// Downloads `url` into the cache, named after its last path segment.
@@ -119,19 +167,17 @@ fn download_to_cache(url: &str, name: &str, expected: &str) -> Result<PathBuf> {
         return Ok(path);
     }
     let part = path.with_extension("part");
-    let resp = get(url)?;
-    let total: Option<u64> = resp
-        .headers()
-        .get("content-length")
-        .and_then(|v| v.to_str().ok()?.parse().ok());
-    let mut out = File::create(&part)?;
-    let (got, _) = pump(
-        resp.into_body().into_reader(),
-        total,
-        "Downloading",
-        |chunk| Ok(out.write_all(chunk)?),
-    )?;
-    out.sync_all()?;
+    for attempt in 1..=ATTEMPTS {
+        match download_part(url, &part) {
+            Ok(()) => break,
+            Err(e) if attempt < ATTEMPTS => {
+                eprintln!("Download interrupted ({e:#}); retrying");
+                std::thread::sleep(Duration::from_secs(2 * u64::from(attempt)));
+            }
+            Err(e) => return Err(e),
+        }
+    }
+    let got = sha256_file(&part)?;
     if got != expected {
         std::fs::remove_file(&part)?;
         bail!("checksum mismatch for {name}: expected {expected}, got {got}; download deleted");
@@ -139,6 +185,56 @@ fn download_to_cache(url: &str, name: &str, expected: &str) -> Result<PathBuf> {
     std::fs::rename(&part, &path)?;
     println!("Verified SHA-256 {got}");
     Ok(path)
+}
+
+/// Downloads `url` into `part`, continuing a partial file when the server supports ranges.
+fn download_part(url: &str, part: &Path) -> Result<()> {
+    let have = part.metadata().map_or(0, |m| m.len());
+    let resp = match get_from(url, have) {
+        // The part file already holds the whole download.
+        Err(e) if have > 0 && matches!(e.downcast_ref(), Some(ureq::Error::StatusCode(416))) => {
+            return Ok(());
+        }
+        r => r?,
+    };
+    let resumed = have > 0 && resp.status() == 206;
+    let mut out = if resumed {
+        println!("Resuming at {} MiB", have >> 20);
+        OpenOptions::new().append(true).open(part)?
+    } else {
+        File::create(part)?
+    };
+    let total: Option<u64> = resp
+        .headers()
+        .get("content-length")
+        .and_then(|v| v.to_str().ok()?.parse().ok());
+    pump(
+        resp.into_body().into_reader(),
+        total,
+        "Downloading",
+        |chunk| Ok(out.write_all(chunk)?),
+    )?;
+    out.sync_all()?;
+    Ok(())
+}
+
+/// Removes older Booto ISOs (and their unfinished downloads) from the cache once `keep` is there.
+fn prune_booto_cache(keep: &Path) {
+    let (Some(dir), Some(keep_name)) = (keep.parent(), keep.file_name()) else {
+        return;
+    };
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let old = name.to_str().is_some_and(|n| {
+            n.starts_with("booto-") && (n.ends_with(".iso") || n.ends_with(".part"))
+        });
+        if old && name != keep_name {
+            let _ = std::fs::remove_file(entry.path());
+        }
+    }
 }
 
 /// Reads `r` to the end, hashing every chunk and handing it to `sink`; returns (SHA-256 hex, bytes read).
@@ -237,6 +333,11 @@ mod tests {
         );
 
         let list = format!("[{release}]");
+        assert_eq!(pick_iso(&list).unwrap().tag, "v1.4.0");
+
+        // The newest release is still uploading its ISO: take the next one.
+        let uploading = r#"{"tag_name":"v1.5.0-beta","assets":[]}"#;
+        let list = format!("[{uploading},{release}]");
         assert_eq!(pick_iso(&list).unwrap().tag, "v1.4.0");
     }
 

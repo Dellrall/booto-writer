@@ -31,6 +31,8 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+      id-token: write
+      attestations: write
     env:
       GH_TOKEN: ${{ github.token }}
     steps:
@@ -39,6 +41,10 @@ jobs:
           pattern: packages-*
           merge-multiple: true
           path: dist
+      # Signed build provenance: gh attestation verify <file> --repo Dellrall/booto-writer
+      - uses: actions/attest-build-provenance@v4
+        with:
+          subject-path: dist/*
       - name: Publish pre-release
         run: |
           gh release create "$GITHUB_REF_NAME" dist/* --repo "$GITHUB_REPOSITORY" --prerelease \

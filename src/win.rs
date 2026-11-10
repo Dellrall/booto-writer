@@ -49,11 +49,16 @@ pub fn require_root() -> Result<()> {
 }
 
 /// BusType is an enum, so it is turned into its name; @() keeps a single disk a JSON array.
-const LIST: &str = "ConvertTo-Json -Compress -InputObject @(Get-Disk | ForEach-Object { \
+/// Win32_DiskDrive.MediaType tells a USB stick ("Removable Media") from a USB hard disk or SSD
+/// ("External hard disk media"); Get-Disk cannot.
+const LIST: &str = "$media = @{}; Get-CimInstance Win32_DiskDrive | ForEach-Object { \
+    $media[[int]$_.Index] = \"$($_.MediaType)\" }; \
+    ConvertTo-Json -Compress -InputObject @(Get-Disk | ForEach-Object { \
     [pscustomobject]@{ Number = $_.Number; Size = $_.Size; Model = \"$($_.FriendlyName)\"; \
-    Bus = \"$($_.BusType)\"; System = [bool]($_.IsBoot -or $_.IsSystem) } })";
+    Bus = \"$($_.BusType)\"; Media = $media[[int]$_.Number]; System = [bool]($_.IsBoot -or $_.IsSystem) } })";
 
 /// Parses LIST output into disks, each with whether it backs the running system.
+/// Removable, as on Linux: SD and MMC cards, and USB disks that call themselves removable media.
 fn parse_disks(json: &str) -> Result<Vec<(Disk, bool)>> {
     let v: Value = serde_json::from_str(json).context("Get-Disk printed invalid JSON")?;
     let list = v.as_array().context("Get-Disk JSON is not a list")?;
@@ -61,11 +66,12 @@ fn parse_disks(json: &str) -> Result<Vec<(Disk, bool)>> {
         .iter()
         .filter_map(|d| {
             let bus = d["Bus"].as_str().unwrap_or_default();
+            let removable_media = d["Media"].as_str() == Some("Removable Media");
             let disk = Disk {
                 path: format!("{PATH_PREFIX}{}", d["Number"].as_u64()?),
                 size: d["Size"].as_u64().unwrap_or(0),
                 model: d["Model"].as_str().unwrap_or_default().trim().to_string(),
-                removable: matches!(bus, "USB" | "SD" | "MMC"),
+                removable: matches!(bus, "SD" | "MMC") || (bus == "USB" && removable_media),
                 tran: bus.to_ascii_lowercase(),
             };
             Some((disk, d["System"].as_bool().unwrap_or(true)))
@@ -218,11 +224,13 @@ mod tests {
 
     #[test]
     fn get_disk_json() {
-        let json = r#"[{"Number":0,"Size":512110190592,"Model":"Samsung SSD ","Bus":"NVMe","System":true},
-            {"Number":2,"Size":16008609792,"Model":"Cruzer","Bus":"USB","System":false},
+        let json = r#"[{"Number":0,"Size":512110190592,"Model":"Samsung SSD ","Bus":"NVMe","Media":"Fixed hard disk media","System":true},
+            {"Number":2,"Size":16008609792,"Model":"Cruzer","Bus":"USB","Media":"Removable Media","System":false},
+            {"Number":3,"Size":2000398934016,"Model":"WD Elements","Bus":"USB","Media":"External hard disk media","System":false},
             {"Size":1}]"#;
         let disks = parse_disks(json).unwrap();
-        assert_eq!(disks.len(), 2, "an entry without a number is skipped");
+        assert_eq!(disks.len(), 3, "an entry without a number is skipped");
+        assert!(!disks[2].0.removable, "a USB hard disk is not removable");
         let (sys, usb) = (&disks[0], &disks[1]);
         assert!(sys.1 && !sys.0.removable);
         assert_eq!(sys.0.model, "Samsung SSD");

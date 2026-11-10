@@ -14,6 +14,8 @@ if ($LASTEXITCODE) { exit $LASTEXITCODE }
 $env:PATH += ";$env:USERPROFILE\.dotnet\tools"
 wix build wix/main.wxs -arch x64 -d "Version=$version" -d "Exe=target\release\booto-writer.exe" -o $Out
 if ($LASTEXITCODE) { exit $LASTEXITCODE }
+# WiX writes a .wixpdb debug file next to the MSI; it is not a download.
+Remove-Item ([IO.Path]::ChangeExtension($Out, 'wixpdb')) -ErrorAction SilentlyContinue
 
 $name = Split-Path $Out -Leaf
 $hash = (Get-FileHash $Out -Algorithm SHA256).Hash.ToLower()

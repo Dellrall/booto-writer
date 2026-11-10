@@ -16,8 +16,9 @@ permissions:
   contents: read
 
 jobs:
+  # cargo test runs in package.yml, on Linux and Windows.
   check:
-    name: fmt, clippy, test
+    name: fmt, clippy
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -27,7 +28,15 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: cargo fmt --check
       - run: cargo clippy --all-targets --locked -- -D warnings
-      - run: cargo test --locked
+
+  msrv:
+    name: builds on Rust 1.88 (rust-version)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@1.88
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo check --all-targets --locked
 
   package:
     uses: ./.github/workflows/package.yml

@@ -7,7 +7,7 @@ Command-line USB writer for [Booto](https://github.com/Dellrall/Booto) and other
 - **`windows`**: makes a Windows 10/11 installer USB for UEFI PCs. Windows ISOs are not hybrid images, so their files are copied to a FAT32 partition instead, and an `install.wim` over 4 GiB is split into `install.swm` parts.
 - **`list`**: shows the removable disks you can write to.
 
-Safety: it never writes the disk the running system lives on, refuses non-removable disks unless you pass `--force-nonremovable`, and asks you to type the device path before erasing anything.
+Safety: it never writes a disk the running system uses (a filesystem mounted outside `/media`, or swap), refuses non-removable disks unless you pass `--force-nonremovable` (on Linux and Windows alike, USB hard disks and most USB SSDs count as non-removable), and asks you to type the device path before erasing anything.
 
 ## Install
 
@@ -22,6 +22,8 @@ x86_64 only. Every [release](https://github.com/Dellrall/booto-writer/releases) 
 sha256sum -c booto-writer-*-x86_64-linux.sha256
 chmod +x booto-writer-*-x86_64-linux && sudo mv booto-writer-*-x86_64-linux /usr/local/bin/booto-writer
 ```
+
+Check where a download was built: `gh attestation verify <file> --repo Dellrall/booto-writer`.
 
 The AppImage is the same program in one self-contained file: `chmod +x booto-writer-*.AppImage`, then `sudo ./booto-writer-*.AppImage list`.
 
@@ -42,8 +44,6 @@ sudo booto-writer booto /dev/sdX --data-size 512M
 
 # Same with Booto's newest pre-release, and a report partition without a passphrase
 sudo booto-writer booto /dev/sdX --channel nightly --no-encrypt
-# Booto publishes its 1.5.x releases (mouse support, quarantine export, heuristics) as -beta
-# pre-releases, so --channel stable still installs v1.4.0. Use --channel nightly to get 1.5.x.
 
 # Booto from an ISO you already have
 sudo booto-writer booto /dev/sdX --iso booto-v1.4.0-amd64.iso
@@ -56,7 +56,17 @@ sudo booto-writer write ubuntu-24.04-desktop-amd64.iso /dev/sdX
 sudo booto-writer windows Win11_24H2_English_x64.iso /dev/sdX
 ```
 
-Downloads are cached in `~/.cache/booto-writer` (or `$XDG_CACHE_HOME`) and reused when the checksum still matches.
+### Which Booto you get
+
+`--channel stable` (the default) installs the release Booto marks **Latest**; `--channel nightly` installs the newest release, pre-releases included. Booto publishes new versions as `-beta` pre-releases until its maintainer marks one production-ready, so stable can be several versions behind: check [Booto's releases](https://github.com/Dellrall/Booto/releases) and use `--channel nightly` for the newest features. If the newest release is still uploading its ISO, nightly takes the one before it.
+
+### Report passphrase
+
+Without `--no-encrypt`, `booto` asks for the report passphrase twice before it erases anything, and Booto asks for it at every start. In scripts, pipe it as one line instead: `printf '%s\n' "$PASS" | sudo booto-writer booto /dev/sdX --yes`.
+
+### Downloads
+
+Downloads are cached in `~/.cache/booto-writer` (or `$XDG_CACHE_HOME`) and reused when the checksum still matches; an interrupted download is retried and resumed, and older Booto ISOs are removed once a new one is verified. Set `GITHUB_TOKEN` to lift GitHub's limit of 60 release lookups an hour (it is sent to api.github.com only).
 
 The `booto` and `windows` commands need `mkfs.vfat` (dosfstools), `partprobe` (parted), `udevadm` and `blockdev`. `booto` also needs `sgdisk` (gdisk), `mkfs.ext4` (e2fsprogs) and `cryptsetup` for an encrypted report partition; `windows` needs `wimlib-imagex` (wimtools) when `install.wim` is over 4 GiB:
 
@@ -85,7 +95,7 @@ On Windows `booto` makes the live system only (the 3 GiB BOOTO_LIVE partition) a
 ## Branches and releases
 
 - `nightly` is the default branch. Changes land here through pull requests.
-- A `vX.Y.Z` tag on `nightly` builds a **pre-release** (`.github/workflows/release.yml`) once every package passes its tests (`.github/workflows/package.yml`: unit tests on Linux and Windows, an AppImage smoke test, and an MSI install that makes a Booto USB on a virtual disk). Bump `version` in `Cargo.toml` first; the workflow refuses a tag that does not match.
+- A `vX.Y.Z` tag on `nightly` builds a **pre-release** (`.github/workflows/release.yml`) once every package passes its tests (`.github/workflows/package.yml`: unit tests on Linux and Windows, Booto USBs made with the static binary on a fake removable disk, an AppImage smoke test, and an MSI install that makes a Booto USB on a virtual disk). Bump `version` in `Cargo.toml` first; the workflow refuses a tag that does not match.
 - `scripts/promote.sh vX.Y.Z` fast-forwards `stable` to that tag and marks its release **Latest**. Promote a release once it has proven itself, so `stable` stays a few releases behind.
 - `.github/workflows/nightly.yml` rebuilds the `nightly-build` pre-release every day at 03:00 UTC, only when `nightly` has new commits. Its files are replaced in place and its notes name the commit they were built from; the `nightly-build` tag itself does not move.
 
@@ -95,7 +105,7 @@ On Windows `booto` makes the live system only (the 3 GiB BOOTO_LIVE partition) a
 cargo fmt --check && cargo clippy --all-targets -- -D warnings && cargo test
 ```
 
-CI runs those three checks, and builds and tests every package, on pull requests and on pushes to `nightly` and `stable`. To save CI minutes it skips changes that touch only Markdown, `docs/` or `LICENSE`, and any commit whose message contains `[skip ci]`.
+CI runs those three checks, checks that the code still builds on Rust 1.88 (`rust-version`), and builds and tests every package, on pull requests and on pushes to `nightly` and `stable`. To save CI minutes it skips changes that touch only Markdown, `docs/` or `LICENSE`, and any commit whose message contains `[skip ci]`.
 
 ## License
 
