@@ -174,6 +174,7 @@ fn main() -> Result<()> {
                 Some(path) => path,
                 None => download::latest_booto(channel)?,
             };
+            flash::check_iso_fits(&iso)?;
             device::confirm(&disk, safety.yes)?;
             #[cfg(unix)]
             return flash::booto(&disk, &iso, data_mib, !no_encrypt);

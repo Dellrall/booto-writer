@@ -18,6 +18,25 @@ pub const LIVE_MIB: u64 = 3 * 1024;
 /// Raw disks take whole sectors only (Windows refuses anything else).
 const SECTOR: usize = 512;
 const MIN_DATA_MIB: u64 = 64;
+/// Room FAT32 needs on BOOTO_LIVE besides the ISO's files (two FATs, directories, cluster slack).
+const FAT_OVERHEAD_MIB: u64 = 32;
+
+/// Fails early when the ISO's files cannot fit the 3 GiB BOOTO_LIVE partition.
+pub fn check_iso_fits(iso: &Path) -> Result<()> {
+    let len = std::fs::metadata(iso)
+        .with_context(|| format!("cannot open {}", iso.display()))?
+        .len();
+    let room = (LIVE_MIB - FAT_OVERHEAD_MIB) << 20;
+    if len > room {
+        bail!(
+            "{} is {} MiB; the BOOTO_LIVE partition holds at most {} MiB of files",
+            iso.display(),
+            len >> 20,
+            room >> 20
+        );
+    }
+    Ok(())
+}
 
 /// "512M" / "2G" -> MiB. The report partition needs at least 64 MiB (16 MiB of it is the LUKS2 header).
 pub fn parse_size_mib(size: &str) -> Result<u64> {
