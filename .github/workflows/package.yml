@@ -1,7 +1,8 @@
 name: Package
 
 # Tests and builds every download on its own OS, then tests the packages themselves:
-# Linux: static binary + AppImage; Windows: MSI, installed and run end to end on a virtual disk.
+# Linux: static binary (run end to end on a fake removable disk) + AppImage;
+# Windows: MSI, installed and run end to end on a virtual disk.
 # Called by CI, Nightly and Release; they publish the "packages-*" artifacts.
 on:
   workflow_call:
@@ -42,6 +43,10 @@ jobs:
           cargo build --release --locked --target x86_64-unknown-linux-musl
           cp target/x86_64-unknown-linux-musl/release/booto-writer "dist/$BIN"
           (cd dist && sha256sum "$BIN" > "$BIN.sha256")
+      - name: Make Booto USBs on a fake removable disk
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: scripts/test-linux.sh "dist/$BIN"
       - run: scripts/build-appimage.sh "dist/$BIN" "dist/$APPIMAGE"
       - name: Smoke-test the AppImage
         env:
@@ -72,6 +77,8 @@ jobs:
       - run: cargo test --locked
       - run: ./scripts/build-msi.ps1 "dist/$env:MSI"
       - name: Install the MSI and make a Booto USB on a virtual disk
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
         run: ./scripts/test-windows.ps1 "dist/$env:MSI"
       - uses: actions/upload-artifact@v7
         with:
