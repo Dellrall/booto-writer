@@ -95,19 +95,38 @@ fn canonical(path: &str) -> Option<PathBuf> {
 }
 
 #[cfg(unix)]
+/// Where desktops mount USB sticks on their own; booto-writer unmounts those itself.
+const AUTOMOUNT_DIRS: [&str; 2] = ["/media/", "/run/media/"];
+
+#[cfg(unix)]
+/// Devices the running system uses: every mounted filesystem outside the automount folders, and
+/// active swap. `mounts` is `findmnt -rnvo SOURCE,TARGET` output, `swaps` is /proc/swaps.
+fn in_use_sources(mounts: &str, swaps: &str) -> Vec<String> {
+    let mounted = mounts.lines().filter_map(|line| {
+        let (source, target) = line.split_once(' ')?;
+        let automount = AUTOMOUNT_DIRS.iter().any(|d| target.starts_with(d));
+        (!automount).then_some(source)
+    });
+    let swap = swaps
+        .lines()
+        .skip(1)
+        .filter_map(|l| l.split_whitespace().next());
+    mounted
+        .chain(swap)
+        .filter(|s| s.starts_with("/dev/"))
+        .map(str::to_string)
+        .collect()
+}
+
+#[cfg(unix)]
 /// Disks that back the running system: never written, even with --force-nonremovable.
-fn system_disks() -> Vec<PathBuf> {
+fn system_disks() -> Result<Vec<PathBuf>> {
+    let mounts = run("findmnt", &["-rnvo", "SOURCE,TARGET"])?;
+    let swaps = std::fs::read_to_string("/proc/swaps").unwrap_or_default();
     let mut found = Vec::new();
-    for mount in ["/", "/boot", "/boot/efi"] {
-        let Ok(source) = run("findmnt", &["-nvro", "SOURCE", "--target", mount]) else {
-            continue;
-        };
-        let source = source.trim();
-        if !source.starts_with("/dev/") {
-            continue;
-        }
+    for source in in_use_sources(&mounts, &swaps) {
         // -s walks up through LVM/LUKS/RAID to the physical disks.
-        let Ok(tree) = run("lsblk", &["-nsrpo", "PATH,TYPE", source]) else {
+        let Ok(tree) = run("lsblk", &["-nsrpo", "PATH,TYPE", &source]) else {
             continue;
         };
         for line in tree.lines() {
@@ -116,7 +135,7 @@ fn system_disks() -> Vec<PathBuf> {
             }
         }
     }
-    found
+    Ok(found)
 }
 
 #[cfg(unix)]
@@ -129,8 +148,11 @@ pub fn prepare(path: &str, force_nonremovable: bool) -> Result<Disk> {
         .with_context(|| {
             format!("{path} is not a whole disk (pass e.g. /dev/sdb, not /dev/sdb1)")
         })?;
-    if system_disks().contains(&want) {
-        bail!("{path} holds the running system; refusing to write it");
+    if system_disks()?.contains(&want) {
+        bail!(
+            "{path} is in use by the running system (a filesystem mounted outside /media, or swap); \
+             refusing to write it. Unmount it first if it is really the USB you mean"
+        );
     }
     if !disk.removable && !force_nonremovable {
         bail!("{path} is not a removable disk; pass --force-nonremovable if you are sure");
@@ -227,6 +249,18 @@ mod tests {
         let disks = parse_lsblk(old).unwrap();
         assert_eq!(disks[0].size, 16_008_609_792);
         assert!(disks[0].removable);
+    }
+
+    #[test]
+    fn in_use_skips_only_automounts() {
+        let mounts = "/dev/nvme0n1p2 /\n/dev/sda1 /home\nproc /proc\n\
+                      /dev/sdb1 /media/las/STICK\n/dev/sdc1 /run/media/las/BOOTO_LIVE\n\
+                      /dev/sdd1 /mnt/usb";
+        let swaps = "Filename\tType\tSize\tUsed\tPriority\n/dev/sde2 partition 1 0 -2\n";
+        assert_eq!(
+            in_use_sources(mounts, swaps),
+            ["/dev/nvme0n1p2", "/dev/sda1", "/dev/sdd1", "/dev/sde2"]
+        );
     }
 
     #[test]
