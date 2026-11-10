@@ -213,15 +213,28 @@ fn choose(list: &[Disk], answer: &str) -> Result<String> {
 }
 
 #[cfg(unix)]
-/// Unmounts every mounted partition of `disk`; fails if any refuses.
+/// Unmounts everything mounted from `disk` and closes LUKS mappers open on it (a desktop that
+/// unlocked the USB, or an earlier booto-writer run that was killed); fails if any refuses.
 pub fn unmount_all(disk: &Disk) -> Result<()> {
-    for line in run("lsblk", &["-nrpo", "PATH,MOUNTPOINT", &disk.path])?.lines() {
-        if let Some((part, mountpoint)) = line.split_once(' ')
-            && !mountpoint.is_empty()
-        {
-            println!("Unmounting {part} from {mountpoint}");
-            run("umount", &[part])?;
+    let mut crypts = Vec::new();
+    for line in run("lsblk", &["-nrpo", "PATH,TYPE,MOUNTPOINT", &disk.path])?.lines() {
+        let mut fields = line.splitn(3, ' ');
+        let (Some(path), Some(kind)) = (fields.next(), fields.next()) else {
+            continue;
+        };
+        let mountpoint = fields.next().unwrap_or_default();
+        if !mountpoint.is_empty() {
+            println!("Unmounting {path} from {mountpoint}");
+            run("umount", &[path])?;
         }
+        if kind == "crypt" {
+            crypts.push(path.to_string());
+        }
+    }
+    // lsblk lists parents first; close the innermost mappers first.
+    for crypt in crypts.iter().rev() {
+        println!("Closing {crypt}");
+        run("cryptsetup", &["close", crypt])?;
     }
     Ok(())
 }

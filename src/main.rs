@@ -120,6 +120,34 @@ pub fn exec(cmd: &str, args: &[&str]) -> Result<()> {
     Ok(())
 }
 
+/// Runs a command with `input` on its stdin (a passphrase never goes on the command line).
+#[cfg(unix)]
+pub fn run_input(cmd: &str, args: &[&str], input: &[u8]) -> Result<()> {
+    use std::io::Write;
+    use std::process::Stdio;
+    let mut child = Command::new(cmd)
+        .args(args)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()
+        .with_context(|| format!("cannot run {cmd}"))?;
+    child
+        .stdin
+        .take()
+        .context("no stdin pipe")?
+        .write_all(input)?;
+    let out = child.wait_with_output()?;
+    if !out.status.success() {
+        bail!(
+            "{cmd} {} failed: {}",
+            args.join(" "),
+            String::from_utf8_lossy(&out.stderr).trim()
+        );
+    }
+    Ok(())
+}
+
 /// Downloads a URL (checksum required) or checks a local file against an optional checksum.
 fn resolve_image(image: &str, sha256: Option<String>) -> Result<PathBuf> {
     let expected = sha256
