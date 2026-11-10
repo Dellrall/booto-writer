@@ -105,7 +105,7 @@ On Windows `booto` makes the live system only (the 3 GiB BOOTO_LIVE partition) a
 cargo fmt --check && cargo clippy --all-targets -- -D warnings && cargo test
 ```
 
-CI runs those three checks, and builds and tests every package, on pull requests and on pushes to `nightly` and `stable`. To save CI minutes it skips changes that touch only Markdown, `docs/` or `LICENSE`, and any commit whose message contains `[skip ci]`.
+CI runs those three checks, checks that the code still builds on Rust 1.88 (`rust-version`), and builds and tests every package, on pull requests and on pushes to `nightly` and `stable`. To save CI minutes it skips changes that touch only Markdown, `docs/` or `LICENSE`, and any commit whose message contains `[skip ci]`.
 
 ## License
 
