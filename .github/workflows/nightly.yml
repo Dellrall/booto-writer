@@ -55,6 +55,8 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+      id-token: write
+      attestations: write
     env:
       GH_TOKEN: ${{ github.token }}
       SHA: ${{ needs.changed.outputs.sha }}
@@ -64,6 +66,10 @@ jobs:
           pattern: packages-*
           merge-multiple: true
           path: dist
+      # Signed build provenance: gh attestation verify <file> --repo Dellrall/booto-writer
+      - uses: actions/attest-build-provenance@v4
+        with:
+          subject-path: dist/*
       - name: Publish nightly-build pre-release
         run: |
           notes="Built from \`${SHA}\` on $(date -u +%Y-%m-%d). Untested between releases; use a stable release for real cases. (The nightly-build tag itself stays put; the files are from that commit.)"
