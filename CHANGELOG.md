@@ -4,6 +4,8 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/); ver
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-11-10
+
 ### Added
 - `booto`, `write` and `windows` take the device as optional: leave it out to pick a removable disk from a numbered list. The typed confirmation still follows.
 - `windows`: Windows 10/11 installer USB for UEFI PCs (FAT32 partition, files copied from the ISO, `install.wim` over 4 GiB split with `wimlib-imagex`).
