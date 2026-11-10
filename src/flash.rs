@@ -20,6 +20,8 @@ const SECTOR: usize = 512;
 const MIN_DATA_MIB: u64 = 64;
 /// Room FAT32 needs on BOOTO_LIVE besides the ISO's files (two FATs, directories, cluster slack).
 const FAT_OVERHEAD_MIB: u64 = 32;
+/// A raw write flushes to the device this often, so progress shows the device, not the page cache.
+const SYNC_EVERY: u64 = 64 << 20;
 
 /// Fails early when the ISO's files cannot fit the 3 GiB BOOTO_LIVE partition.
 pub fn check_iso_fits(iso: &Path) -> Result<()> {
@@ -90,7 +92,16 @@ pub fn raw(disk: &Disk, image: &Path) -> Result<()> {
         .open(&disk.path)
         .with_context(|| format!("cannot open {}", disk.path))?;
     let mut dst = SectorWriter::new(dst);
-    let (written, _) = pump(src, Some(len), "Writing", |chunk| dst.write(chunk))?;
+    let mut unsynced = 0u64;
+    let (written, _) = pump(src, Some(len), "Writing", |chunk| {
+        dst.write(chunk)?;
+        unsynced += chunk.len() as u64;
+        if unsynced >= SYNC_EVERY {
+            dst.inner.sync_data()?;
+            unsynced = 0;
+        }
+        Ok(())
+    })?;
     println!("Flushing to the device...");
     let dst = dst.finish()?;
     dst.sync_all()?;
